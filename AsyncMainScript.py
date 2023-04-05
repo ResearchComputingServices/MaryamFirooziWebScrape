@@ -4,7 +4,6 @@ import traceback
 import sys
 import time
 import asyncio
-import subprocess
 
 import pandas as pd
 from urllib.parse import urlparse
@@ -19,6 +18,7 @@ INPUT_DATA_FOLDER_PATH = os.path.join(BASE_FOLDER_PATH,'InputData')
 COMPANY_DATA_FILE_PATH = os.path.join(INPUT_DATA_FOLDER_PATH,'companyWebsites.csv')
 KEYWORDS_DATA_FILE_PATH = os.path.join(INPUT_DATA_FOLDER_PATH,'keywords.dat')
 OUTPUT_DATA_FOLDER_PATH = os.path.join(BASE_FOLDER_PATH,'OutputData')
+LOGGING_FOLDER_PATH = os.path.join(BASE_FOLDER_PATH,'Logging')
 
 COMPANY_NAME_COL_NUM = 1
 COMPANY_URL_COL_NUM = 6
@@ -60,8 +60,8 @@ def GetCompanyDict(dataFileName = COMPANY_DATA_FILE_PATH, verboseFlag = False):
         lineSplit = line.split('^')
                 
         if len(lineSplit) > COMPANY_URL_COL_NUM:
-            companyName = lineSplit[COMPANY_NAME_COL_NUM]
-            companyURL = lineSplit[COMPANY_URL_COL_NUM]
+            companyName = lineSplit[COMPANY_NAME_COL_NUM].strip()
+            companyURL = lineSplit[COMPANY_URL_COL_NUM].strip()
         
             companyDict[companyName] = companyURL
         else:
@@ -107,7 +107,6 @@ def ScrapeLocalLinks(webPageResponse, url):
                 if is_valid(link):
                     localLinkList.append(link)
     except:
-        # print(webPageResponse.content)
         return localLinkList
         
     return localLinkList
@@ -118,7 +117,9 @@ def ScrapeText(webPageResponse, url):
 
     webPageText = ''
 
-    if IsPDF(url):
+    if url == None or url == '':
+        return webPageResponse
+    elif IsPDF(url):
         try:
             f = io.BytesIO(webPageResponse.content)     
             reader = PdfReader(f)
@@ -131,30 +132,28 @@ def ScrapeText(webPageResponse, url):
         except:
             return webPageText
     else:       
-        if webPageResponse.html != None:
-            try:
+            try:                     
                 paragraphs = webPageResponse.html.find('p')   
                 for para in paragraphs:
-                    webPageText += para.text + '\n'
+                    webPageText += para.text + '\n'                   
             except:
-                print('Empty Response...')
+                print('Empty Response: ', url)
                 
     return webPageText
 
 ############################################################################################
 
-async def Get(asyncSession, url, VERVOSE = False):
-    if(VERVOSE):
+async def Get(asyncSession, url, VERBOSE = False):
+    if(VERBOSE):
         print('Start Get: ', url, flush=True)
            
     try:
         response  = await asyncSession.get(url, timeout = GET_TIME_OUT)
-        # print(f"Status Code: {response.status_code}")
 
     except:
         response = None
     
-    if(VERVOSE):
+    if(VERBOSE):
         print('End Get: ', url, flush=True)
     
     return response
@@ -169,9 +168,9 @@ def TaskFunctionGetResponses(asyncSession, urlsToGet):
 
 ############################################################################################
 
-async def Render(response, VERVOSE = False):
+async def Render(response, VERBOSE = False):
     
-    if(VERVOSE):
+    if(VERBOSE):
         print('Start Rendering: ', response.url, flush=True)
     
     if not IsPDF(response.url):  
@@ -182,7 +181,7 @@ async def Render(response, VERVOSE = False):
             # print(sys.exc_info()[0])
             # traceback.print_exc()   
     
-    if(VERVOSE):
+    if(VERBOSE):
         print('Done Rendering: ', response.url, flush=True)
     
     return response
@@ -199,7 +198,7 @@ def TaskFunctionRender(listOfResponses):
 
 ############################################################################################
 
-async def TaskManager(linksToCrawl):
+async def TaskManager(linksToCrawl, doRender = True):
     
     # # initialize an HTTP session
     session = AsyncHTMLSession()
@@ -207,44 +206,26 @@ async def TaskManager(linksToCrawl):
     getTasks = TaskFunctionGetResponses(session, linksToCrawl)   
     responses = await asyncio.gather(*getTasks)
 
-    # renderTasks = TaskFunctionRender(responses)
-    # responses = await asyncio.gather(*renderTasks)
+    if doRender:
+        renderTasks = TaskFunctionRender(responses)
+        responses = await asyncio.gather(*renderTasks)
 
     await session.close()
     
     return responses
 
 ############################################################################################
-
-def KillChromePocesses(VERBOSE = False):
-     
-    if VERBOSE:
-        print('Killing chrome process...')
-    
-    cmd = "ps -u nickshiell | grep chrome | wc -l"
-    
-    nProcess = int(subprocess.check_output(cmd, shell=True,text=True))
-    
-    attempts = 0
-    
-    while nProcess > 0 and attempts <= 10:
-        if VERBOSE:
-            print('# of Process: ', nProcess,'\t# of Attempts:',attempts)
-        
-        os.system("pkill -9 chrome")
-       
-        nProcess = int(subprocess.check_output(cmd, shell=True,text=True))
-        attempts += 1
-        time.sleep(1)
+   
+def WriteToLog(logFile, report):
+    logFile.write(report + '\n')
+    logFile.flush()
 
 ############################################################################################
-   
-def CrawlUrl(url, logFile):
+
+def CrawlUrl(url, logFile):   
     currentDomain = urlparse(url).netloc
-    logFile.write('Crawling: '+ url +'\n')
-    print('Crawling: ', url)
-    logFile.write('Domain: '+ currentDomain+'\n')
-    print('Domain: ', currentDomain)
+    WriteToLog(logFile, 'Crawling: '+ url)
+    WriteToLog(logFile, 'Domain: '+ currentDomain)
     
     crawledLinks = []
     linksToCrawl = [url]    
@@ -266,8 +247,6 @@ def CrawlUrl(url, logFile):
         
         # send the list of links to crawl to the TaskManager function
         results = asyncio.run(TaskManager(crawlList))
-
-        # KillChromePocesses()
 
         # create a list of links and text found by the Tasks
         listOfFoundLinks = []
@@ -293,12 +272,10 @@ def CrawlUrl(url, logFile):
         # Update the depth of the crawl and end the search if MAX_CRAWL_DEPTH has been reached
         crawlCounter += nLinksCrawled
 
-        logFile.write(str(crawlCounter)+','+str(nLinksCrawled)+','+str(len(linksToCrawl))+','+str(failedURL)+','+str(e-s)+'\n')
-        print(crawlCounter,',',nLinksCrawled,',',len(linksToCrawl),',',failedURL,',',(e-s))
-
+        WriteToLog(logFile, str(crawlCounter)+','+str(nLinksCrawled)+','+str(len(linksToCrawl))+','+str(failedURL)+','+str(e-s))
+        
         if crawlCounter >= MAX_CRAWL_DEPTH:
-            logFile.write('[WARNING]: CrawlUrl: MAX_CRAWL_DEPTH reacehd: '+ str(MAX_CRAWL_DEPTH)+'\n')
-            print('[WARNING]: CrawlUrl: MAX_CRAWL_DEPTH reacehd: ', MAX_CRAWL_DEPTH)
+            WriteToLog(logFile,'[WARNING]: CrawlUrl: MAX_CRAWL_DEPTH reacehd: '+ str(MAX_CRAWL_DEPTH))
             break
             
     return websiteTextDF, crawledLinks
@@ -323,83 +300,42 @@ def SearchForKeyWords(websiteTextDF, keywordList):
    
 ############################################################################################
 
-def WriteResults(company,listOfFoundKeyWords):
-    outputFilePath = os.path.join(OUTPUT_DATA_FOLDER_PATH,company+'.txt')
-    outputDataFile = open(outputFilePath, 'w')
-    
-    for keyword in listOfFoundKeyWords:
-        outputDataFile.write(keyword+'\n')
-        
-    outputDataFile.close()
-    return
-
-############################################################################################
-
-def WriteCrawledLinks(crawledLinks):
-    outputFilePath = os.path.join(OUTPUT_DATA_FOLDER_PATH,company+'_crawled_links.txt')
-    outputDataFile = open(outputFilePath, 'w')
-    
-    for link in crawledLinks:
-        outputDataFile.write(link+'\n')
-        
-    outputDataFile.close()
-    return
-
-############################################################################################
-
-def WriteScrapedText(webpageText):
-    outputFilePath = os.path.join(OUTPUT_DATA_FOLDER_PATH,company+'_scraped_text.txt')
-    outputDataFile = open(outputFilePath, 'w')
-    
-    outputDataFile.write(webpageText)
-        
-    outputDataFile.close()
-    return
-
-############################################################################################
-
 if len(sys.argv) == 3:
 
     dataFileName = sys.argv[1]
     logFileName = sys.argv[2]
 
     dataFilePath = os.path.join(INPUT_DATA_FOLDER_PATH, dataFileName) 
-    logFilePath = os.path.join(OUTPUT_DATA_FOLDER_PATH, logFileName)
+    logFilePath = os.path.join(LOGGING_FOLDER_PATH, logFileName)
 
     logFile = open(logFilePath,'a+')
 
     companyDict = GetCompanyDict(dataFilePath)
     keywordList = GetKeyWordList()
 
-
-    logFile.write('# of Companies: '+ str(len(companyDict))+ '\n')
-    print('# of Companies: ',len(companyDict))
+    WriteToLog(logFile,'# of Companies: '+ str(len(companyDict)))
     counter = 1
 
     for company in companyDict.keys():
         
         try:
-            logFile.write('Company Counter: '+ str(counter) + '\n')
-            print('Company Counter: ', str(counter))
+            WriteToLog(logFile,'Company Counter: '+ str(counter))
          
             websiteTextDF, crawledLinks = CrawlUrl(companyDict[company], logFile)        
             websiteTextDF = SearchForKeyWords(websiteTextDF,keywordList)
             
             filename = company.replace(' ', '_')+'.pkl'
+            filename = filename.replace('/', '~')
             outputFilePath = os.path.join(OUTPUT_DATA_FOLDER_PATH, filename)
-            print(outputFilePath)
             websiteTextDF.to_pickle(outputFilePath)
             
         except:
-            logFile.write('0 ,0 , -1 , 0 , 0 ,'+company)
-            print('0 ,0 , -1 , 0 , 0 ,',company)
+            WriteToLog(logFile,'[ERROR]: unable to crawl: '+company)
             print(sys.exc_info()[0])
             traceback.print_exc()
-        
-        # input('Press ENTER to continue...')  
+                    
         counter = counter + 1
-        logFile.flush()
-        
+                
     logFile.close()
 else:
     print('[ERROR]: No company list, or log file ename given.')

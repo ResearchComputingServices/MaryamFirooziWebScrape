@@ -1,2 +1,5 @@
 OutputData/*
 __pycache__/*
+RunScript.sh
+FileToSend/*
+InputData/
